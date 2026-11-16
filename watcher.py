@@ -89,7 +89,7 @@ JS_EXTRACT = """
       const p = card.parentElement;
       const ids = new Set([...p.querySelectorAll('a[href*="/jobfind-pc/job/"]')]
         .map(x => ((x.getAttribute('href') || '').match(/\\/job\\/[^/]+\\/(\\d+)/) || [])[1]).filter(Boolean));
-      if (ids.size > 1 || p.tagName === 'BODY') break;
+      if (ids.size > 1 || p.tagName === 'BODY' || /件あり/.test(p.innerText)) break;
       card = p;
     }
     const text = a.innerText.trim();
@@ -140,7 +140,7 @@ def read_listing(page, label, url):
                 "store": norm(item["store"]) or card[:40],
                 "title": norm(mj.group(1)) if mj else "",
                 "wage": wage,
-                "card": card[:400],
+                "card": unicodedata.normalize("NFKC", item["card"] or "")[:600],
                 "url": f"{BASE}/jobfind-pc/job/Kanto/{item['id']}",
             }
         nxt = page.evaluate(
@@ -192,8 +192,67 @@ def fetch_all():
                     time.sleep(5)
             if last_err:
                 errors.append(last_err)
+        # 職種の判定: 対象求人の詳細ページを開いて見る（見るだけ。応募はしない）
+        excluded = {}
+        for jid, job in list(found.items()):
+            head = ""
+            try:
+                page.goto(job["url"], wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(2000)
+                head = page.evaluate(JS_DETAIL)
+            except Exception as e:  # noqa: BLE001
+                print(f"[詳細ページ読めず] {jid}: {type(e).__name__}")
+            jtype, jtitle = classify(head, job["card"])
+            job["type"], job["detail_head"] = jtype, norm(head)[:300]
+            job["title"] = jtitle or ("" if job["title"] in ("すべて", "") else job["title"])
+            print(f"[職種] {jid} {job['store']}: {jtype} / {job['title']}")
+            if jtype not in WANT_TYPES:
+                excluded[jid] = job
+                del found[jid]
         browser.close()
-    return found, REQUIRED <= ok_labels, bool(ok_labels), errors
+    return found, excluded, REQUIRED <= ok_labels, bool(ok_labels), errors
+
+
+# 詳細ページの「見出し」部分: ページタイトル・見出し・「職種」欄
+JS_DETAIL = """
+() => {
+  const parts = [document.title];
+  document.querySelectorAll('h1,h2,h3').forEach((h, i) => { if (i < 6) parts.push(h.innerText); });
+  document.querySelectorAll('th,dt').forEach(el => {
+    if (/職種/.test(el.innerText)) {
+      const v = el.nextElementSibling;
+      if (v) parts.push('職種:' + v.innerText);
+    }
+  });
+  return parts.join('\\n');
+}
+"""
+
+WANT_TYPES = {"バリスタ", "不明"}   # 通知する職種。不明は取りこぼし防止のため通知する
+SHUFU = ["しゅふ", "主婦", "主夫"]
+OTHER = ["シフトスーパーバイザー", "SSV", "アテンダント", "店長", "マネージャー"]
+
+
+def classify(head, card):
+    """(職種区分, 表示用の職種名) を返す。区分: バリスタ / しゅふ / その他 / 不明"""
+    for text in (unicodedata.normalize("NFKC", head or ""), unicodedata.normalize("NFKC", card or "")):
+        line = ""
+        m = re.search(r"職種\s*[:：]?[ \t]*\n?[ \t]*([^\n]{1,60})", text)
+        if m:
+            line = norm(m.group(1))
+        # 「職種」欄があればそれだけで判定（本文の「主婦歓迎」などに引っ張られない）
+        target = line or text
+        if not any(k in target for k in ["バリスタ"] + SHUFU + OTHER):
+            continue
+        name = line or next((w for w in re.findall(r"[^\s/|｜]*(?:バリスタ|スーパーバイザー|アテンダント)[^\s/|｜]*", target)), "")
+        if any(k in target for k in SHUFU) and ("バリスタ" not in target or any(k in (line or name) for k in SHUFU)):
+            return "しゅふ", name
+        if any(k in (line or name) for k in OTHER):
+            return "その他", name
+        if "バリスタ" in target:
+            return "バリスタ", name or "バリスタ"
+        return "その他", name
+    return "不明", ""
 
 
 # ---------------------------------------------------------------- 通知（任意: ntfy）
@@ -245,9 +304,13 @@ def main():
         state["events"] = (state["events"] + [e])[-100:]
 
     try:
-        found, all_ok, any_ok, errors = fetch_all()
+        found, excluded, all_ok, any_ok, errors = fetch_all()
     except Exception as e:  # noqa: BLE001
-        found, all_ok, any_ok, errors = {}, False, False, [f"ブラウザ起動失敗: {type(e).__name__}: {str(e)[:200]}"]
+        found, excluded, all_ok, any_ok, errors = {}, {}, False, False, [f"ブラウザ起動失敗: {type(e).__name__}: {str(e)[:200]}"]
+    # 対象外の職種（しゅふ向け・SSVなど）は記録から黙って外す（掲載終了の通知も出さない）
+    state["excluded"] = {k: {x: v.get(x, "") for x in ("store", "title", "type", "url")} for k, v in excluded.items()}
+    for jid in excluded:
+        state["jobs"].pop(jid, None)
     msgs = []
     state["last_errors"] = errors[:4]
 
@@ -273,7 +336,7 @@ def main():
         state["last_full_check"] = t.isoformat() if all_ok else state.get("last_full_check", "")
 
         for jid, job in found.items():
-            job = {k: v for k, v in job.items() if k != "card"}
+            job = {**{k: v for k, v in job.items() if k != "card"}, "card_head": job["card"][:200]}
             prev = state["jobs"].get(jid)
             if prev is None:
                 if not first_run:
