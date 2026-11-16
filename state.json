@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "kind": "started",
+      "note": "85044",
+      "ts": "2026-11-16T17:21:37.514857+09:00"
+    }
+  ],
+  "fail_streak": 0,
+  "jobs": {
+    "85044": {
+      "first_seen": "2026-11-16T17:21:37.514857+09:00",
+      "id": "85044",
+      "last_seen": "2026-11-16T17:21:37.514857+09:00",
+      "miss": 0,
+      "status": "open",
+      "store": "葛西臨海公園駅店_1774",
+      "title": "すべて",
+      "url": "https://starbucks-job.jp/jobfind-pc/job/Kanto/85044",
+      "wage": "時給 1,400円以上"
+    }
+  },
+  "last_errors": [],
+  "last_full_check": "2026-11-16T17:21:37.514857+09:00",
+  "last_success": "2026-11-16T17:21:37.514857+09:00",
+  "last_success_hour": "2026-11-16T17:00+09:00",
+  "outbox": []
+}
